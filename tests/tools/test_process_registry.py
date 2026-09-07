@@ -1115,6 +1115,57 @@ class TestSpawnRewriteCompoundBackground:
 
 
 # =========================================================================
+# systemd --user --scope probe binary portability
+# =========================================================================
+
+
+class TestSystemdScopeProbeBinary:
+    """The probe's no-op command must be resolved through PATH.
+
+    Distributions that do not populate ``/bin`` with coreutils (NixOS, and any
+    minimal image) have no ``/bin/true``. Hardcoding it makes the probe fail on
+    every call, so ``_systemd_run_user_scope_available()`` returns False
+    permanently and every restart-safe gateway child (cron jobs, kanban
+    workers) refuses to spawn.
+    """
+
+    def _probe_argv(self, monkeypatch, which_map):
+        import shutil
+
+        import tools.process_registry as _pr
+
+        _pr._SYSTEMD_SCOPE_AVAILABLE = None
+        _pr._SYSTEMD_SCOPE_PROBED_AT = 0.0
+        monkeypatch.setattr(_pr, "_IS_LINUX", True)
+        monkeypatch.setattr(shutil, "which", lambda name: which_map.get(name))
+        captured = {}
+
+        def fake_run(argv, **_kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        monkeypatch.setattr(_pr.subprocess, "run", fake_run)
+        assert _pr._systemd_run_user_scope_available() is True
+        return captured["argv"]
+
+    def test_probe_uses_path_resolved_true(self, monkeypatch):
+        nix_true = "/nix/store/abc123-coreutils-9.5/bin/true"
+        argv = self._probe_argv(monkeypatch, {
+            "systemd-run": "/run/current-system/sw/bin/systemd-run",
+            "true": nix_true,
+        })
+        assert argv[-1] == nix_true
+        assert "/bin/true" not in argv
+
+    def test_probe_falls_back_to_bin_true_when_absent_from_path(self, monkeypatch):
+        argv = self._probe_argv(monkeypatch, {
+            "systemd-run": "/usr/bin/systemd-run",
+            "true": None,
+        })
+        assert argv[-1] == "/bin/true"
+
+
+# =========================================================================
 # Checkpoint
 # =========================================================================
 
